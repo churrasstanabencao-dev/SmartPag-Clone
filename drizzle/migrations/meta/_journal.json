@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789133253956,
+      "tag": "0000_add_expense_payment_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789345377948,
+      "tag": "0001_create_receivables",
+      "breakpoints": true
+    }
+  ]
+}
