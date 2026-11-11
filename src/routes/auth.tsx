@@ -2,7 +2,8 @@ import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
+import { authRedirectUrl } from "@/lib/auth-callback";
+import { authErrorMessage } from "@/lib/auth-errors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,7 +48,7 @@ function AuthPage() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
-      toast.error(error.message);
+      toast.error(authErrorMessage(error));
       return;
     }
     navigate({ to: "/dashboard", replace: true });
@@ -60,34 +61,49 @@ function AuthPage() {
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
+        emailRedirectTo: authRedirectUrl("/auth/callback"),
         data: { full_name: fullName, store_name: storeName || "Meu Estabelecimento" },
       },
     });
     setLoading(false);
     if (error) {
-      toast.error(error.message);
+      toast.error(authErrorMessage(error));
       return;
     }
     if (!data.session) {
-      toast.success("Conta criada! Confirme seu e-mail para entrar.");
+      toast.success("Conta criada. Abra o e-mail de confirmação para entrar. Confira também o spam.");
       return;
     }
     navigate({ to: "/dashboard", replace: true });
   }
 
-  async function google() {
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
+  async function forgot() {
+    if (!email) {
+      toast.error("Informe o e-mail da conta.");
+      return;
+    }
+    setLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: authRedirectUrl("/auth/reset"),
     });
-    if (result.error) {
-      toast.error("Não foi possível entrar com o Google.");
+    setLoading(false);
+    if (error) {
+      toast.error(authErrorMessage(error));
       return;
     }
-    if (result.redirected) {
-      return;
+    toast.success("Enviamos um link para redefinir a senha. Veja a caixa de entrada e o spam.");
+  }
+
+  async function google() {
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: authRedirectUrl("/auth/callback") },
+    });
+    if (error) {
+      setLoading(false);
+      toast.error(authErrorMessage(error));
     }
-    navigate({ to: "/dashboard", replace: true });
   }
 
   return (
@@ -121,7 +137,17 @@ function AuthPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="password">Senha</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="password">Senha</Label>
+                    <button
+                      type="button"
+                      onClick={forgot}
+                      disabled={loading}
+                      className="text-xs text-primary hover:underline disabled:opacity-50"
+                    >
+                      Esqueci minha senha
+                    </button>
+                  </div>
                   <Input
                     id="password"
                     type="password"
@@ -190,8 +216,8 @@ function AuthPage() {
             <span className="h-px flex-1 bg-border" />
           </div>
 
-          <Button variant="outline" className="w-full" onClick={google}>
-            Continuar com Google
+          <Button variant="outline" className="w-full" onClick={google} disabled={loading}>
+            Entrar com Google
           </Button>
         </div>
       </div>
