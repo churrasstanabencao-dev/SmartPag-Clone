@@ -24,9 +24,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-const PREVIEW_URL = "https://id-preview--77d45d92-165e-4418-a9e8-a3a4d18c7bc2.lovable.app";
-const PUBLISHED_URL = "https://smart-pay-joy.lovable.app";
-
 export function WhatsAppConfig() {
   const { storeId } = useStore();
   const qc = useQueryClient();
@@ -51,8 +48,8 @@ export function WhatsAppConfig() {
     enabled: !!storeId,
   });
 
-  const webhookUrl = `${PUBLISHED_URL}/api/public/whatsapp`;
-  const previewWebhookUrl = `${PREVIEW_URL}/api/public/whatsapp`;
+  const webhookUrl =
+    typeof window === "undefined" ? "/api/public/whatsapp" : `${window.location.origin}/api/public/whatsapp`;
 
   const waMeLink = config?.from
     ? `https://wa.me/${config.from.replace("whatsapp:", "")}?text=${encodeURIComponent("Olá! Quero consultar o SmartPag")}`
