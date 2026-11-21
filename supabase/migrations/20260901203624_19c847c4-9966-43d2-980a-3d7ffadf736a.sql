@@ -1,3 +1,5 @@
+SET search_path TO public, extensions;
+
 -- ROLES
 create type public.app_role as enum ('admin','user');
 

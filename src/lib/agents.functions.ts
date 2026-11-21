@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { generateAiText } from "@/lib/ai.server";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
@@ -349,57 +350,15 @@ export const askAgent = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => Input.parse(d))
   .handler(async ({ data, context }) => {
-    const key = process.env["LOVABLE_API_KEY"];
-    if (!key) throw new Error("IA indisponível: chave não configurada.");
-
     const ctx = await buildContext(context.supabase as unknown as Sb, data.agent, data.storeId ?? null);
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
-      body: JSON.stringify({
-        model: "openai/gpt-5.6-terra",
-        stream: true,
-        instructions: `${SYSTEM[data.agent]}\n\n${BASE_RULES}\n\nData/hora atual: ${new Date().toISOString()}\n\n=== DADOS REAIS DA OPERAÇÃO (últimos 30 dias) ===\n${ctx}`,
-        input: data.messages.map((m) => ({
-          role: m.role,
-          content: [{ type: m.role === "user" ? "input_text" : "output_text", text: m.content }],
-        })),
-      }),
+    const text = await generateAiText({
+      instructions: `${SYSTEM[data.agent]}\n\n${BASE_RULES}\n\nData/hora atual: ${new Date().toISOString()}\n\n=== DADOS REAIS DA OPERAÇÃO (últimos 30 dias) ===\n${ctx}`,
+      input: data.messages.map((m) => ({
+        role: m.role,
+        content: [{ type: "input_text" as const, text: m.content }],
+      })),
     });
 
-    if (!res.ok || !res.body) {
-      const body = await res.text().catch(() => "");
-      if (res.status === 429) throw new Error("Muitas solicitações. Tente novamente em instantes.");
-      if (res.status === 402)
-        throw new Error("Créditos de IA esgotados. Adicione créditos no Lovable para continuar.");
-      throw new Error(`Falha na IA (${res.status}): ${body.slice(0, 200)}`);
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let text = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const evt = JSON.parse(payload);
-          if (evt.type === "response.output_text.delta" && typeof evt.delta === "string") {
-            text += evt.delta;
-          }
-        } catch {
-          /* ignore partial */
-        }
-      }
-    }
-
-    return { text: text.trim() || "Não consegui gerar uma resposta agora. Tente novamente." };
+    return { text: text || "Não consegui gerar uma resposta agora. Tente novamente." };
   });

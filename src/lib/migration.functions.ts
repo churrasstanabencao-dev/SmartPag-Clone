@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { type AiContent, generateAiText } from "@/lib/ai.server";
 
 const METHODS = [
   "dinheiro",
@@ -35,35 +36,6 @@ function jsonFromText(text: string): unknown {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
-async function readStream(res: Response): Promise<string> {
-  if (!res.body) return "";
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const evt = JSON.parse(payload);
-        if (evt.type === "response.output_text.delta" && typeof evt.delta === "string") {
-          text += evt.delta;
-        }
-      } catch {
-        /* ignore partial chunk */
-      }
-    }
-  }
-  return text;
-}
-
 const PROMPT = `Você é o Agente de Transição de Sistemas de um ERP de restaurante.
 Recebe um relatório de VENDAS exportado de OUTRO sistema (PDF, cupom, planilha impressa ou print).
 Extraia TODAS as vendas/pagamentos encontrados e responda SOMENTE com JSON válido, sem texto extra:
@@ -81,12 +53,9 @@ export const parseSalesDocument = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: unknown) => ParseInput.parse(d))
   .handler(async ({ data }) => {
-    const key = process.env["LOVABLE_API_KEY"];
-    if (!key) throw new Error("IA indisponível: chave não configurada.");
-
     const dataUrl = `data:${data.contentType};base64,${data.fileBase64}`;
     const isImage = data.contentType.startsWith("image/");
-    const content = isImage
+    const content: AiContent[] = isImage
       ? [
           { type: "input_text", text: "Extraia as vendas deste documento." },
           { type: "input_image", image_url: dataUrl },
@@ -96,26 +65,11 @@ export const parseSalesDocument = createServerFn({ method: "POST" })
           { type: "input_file", filename: data.fileName, file_data: dataUrl },
         ];
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
-      body: JSON.stringify({
-        model: "google/gemini-3-pro-preview",
-        stream: true,
-        instructions: PROMPT,
-        input: [{ role: "user", content }],
-      }),
+    const text = await generateAiText({
+      vision: true,
+      instructions: PROMPT,
+      input: [{ role: "user", content }],
     });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      if (res.status === 429) throw new Error("Muitas solicitações. Tente novamente em instantes.");
-      if (res.status === 402)
-        throw new Error("Créditos de IA esgotados. Adicione créditos no Lovable para continuar.");
-      throw new Error(`Falha ao ler o documento (${res.status}): ${body.slice(0, 200)}`);
-    }
-
-    const text = await readStream(res);
     const parsed = jsonFromText(text) as {
       sales?: unknown;
       source?: unknown;

@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { AiNotConfiguredError, generateAiText } from "@/lib/ai.server";
 
 const brl = (cents: number) =>
   (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -159,50 +160,37 @@ export const baixarProvisoes = createServerFn({ method: "POST" })
 
     // Parecer do Agente Financeiro (opcional — não bloqueia a baixa)
     let parecer = "";
-    const key = process.env["LOVABLE_API_KEY"];
-    if (key) {
-      try {
-        const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
-        const { data: pays } = await supabase
-          .from("payments")
-          .select("amount_cents")
-          .eq("store_id", data.storeId)
-          .gte("paid_at", since)
-          .limit(5000);
-        const receita = (pays ?? []).reduce((s, p) => s + Number(p.amount_cents), 0);
+    try {
+      const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+      const { data: pays } = await supabase
+        .from("payments")
+        .select("amount_cents")
+        .eq("store_id", data.storeId)
+        .gte("paid_at", since)
+        .limit(5000);
+      const receita = (pays ?? []).reduce((s, p) => s + Number(p.amount_cents), 0);
 
-        const ctx = [
-          `Mês de referência: ${data.refMonth}. Hoje: ${today}.`,
-          `Receita dos últimos 30 dias: ${brl(receita)}.`,
-          `Baixas realizadas agora (${alvo.length}) total ${brl(baixado)}:`,
-          alvo.map((p) => `${p.due_date} | ${p.description} | ${brl(Number(p.amount_cents))} | ${p.category}`).join("\n") ||
-            "nenhuma",
-          `Provisões ainda em aberto: ${brl(restante)}.`,
-          ((provs ?? [])
-            .filter((p) => !alvo.some((a) => a.id === p.id))
-            .slice(0, 30)
-            .map((p) => `${p.due_date} | ${p.description} | ${brl(Number(p.amount_cents))} | ${p.category}`)
-            .join("\n") || "nenhuma"),
-        ].join("\n");
+      const ctx = [
+        `Mês de referência: ${data.refMonth}. Hoje: ${today}.`,
+        `Receita dos últimos 30 dias: ${brl(receita)}.`,
+        `Baixas realizadas agora (${alvo.length}) total ${brl(baixado)}:`,
+        alvo.map((p) => `${p.due_date} | ${p.description} | ${brl(Number(p.amount_cents))} | ${p.category}`).join("\n") ||
+          "nenhuma",
+        `Provisões ainda em aberto: ${brl(restante)}.`,
+        ((provs ?? [])
+          .filter((p) => !alvo.some((a) => a.id === p.id))
+          .slice(0, 30)
+          .map((p) => `${p.due_date} | ${p.description} | ${brl(Number(p.amount_cents))} | ${p.category}`)
+          .join("\n") || "nenhuma"),
+      ].join("\n");
 
-        const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
-          body: JSON.stringify({
-            model: "openai/gpt-5.6-terra",
-            instructions:
-              "Você é o Agente Financeiro do SmartPag. Responda em português do Brasil, curto (máx. 8 linhas), confirmando as baixas feitas, o impacto no caixa e as prioridades de pagamento restantes. Não invente números.",
-            input: [{ role: "user", content: [{ type: "input_text", text: ctx }] }],
-          }),
-        });
-        if (res.ok) {
-          const json: any = await res.json();
-          parecer =
-            json?.output_text ??
-            json?.output?.[0]?.content?.[0]?.text ??
-            "";
-        }
-      } catch {
+      parecer = await generateAiText({
+        instructions:
+          "Você é o Agente Financeiro do SmartPag. Responda em português do Brasil, curto (máx. 8 linhas), confirmando as baixas feitas, o impacto no caixa e as prioridades de pagamento restantes. Não invente números.",
+        input: [{ role: "user", content: [{ type: "input_text", text: ctx }] }],
+      });
+    } catch (error) {
+      if (!(error instanceof AiNotConfiguredError)) {
         /* parecer é opcional */
       }
     }

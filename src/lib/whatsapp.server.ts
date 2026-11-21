@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { generateAiText } from "@/lib/ai.server";
 
 // ============= Twilio config =============
 
@@ -87,46 +88,6 @@ export async function downloadTwilioMedia(
 const brl = (cents: number) =>
   (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-/** Read a streaming Responses API call and accumulate text deltas. */
-async function readStreamingText(res: Response): Promise<string> {
-  if (!res.body) {
-    const json = await res.json().catch(() => null);
-    const text =
-      json?.output?.find((o: any) => o.type === "message")?.content?.find(
-        (c: any) => c.type === "output_text",
-      )?.text ?? json?.output_text ?? "";
-    return text;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const evt = JSON.parse(payload);
-        if (
-          evt.type === "response.output_text.delta" &&
-          typeof evt.delta === "string"
-        ) {
-          text += evt.delta;
-        }
-      } catch {
-        /* ignore partial */
-      }
-    }
-  }
-  return text;
-}
-
 // ============= AI context =============
 
 async function buildWhatsAppContext(supabaseAdmin: any, storeId: string): Promise<string> {
@@ -210,9 +171,6 @@ export async function askWhatsAppAI(
   history: { role: string; content: string }[],
 ): Promise<string> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const key = process.env["LOVABLE_API_KEY"];
-  if (!key) throw new Error("IA indisponível: chave não configurada.");
-
   const ctx = await buildWhatsAppContext(supabaseAdmin, storeId);
 
   const systemPrompt = `Você é o assistente SmartPag no WhatsApp. Responda SEMPRE em português do Brasil, de forma curta e objetiva (máx 3-4 frases). Use os dados reais fornecidos. Formate valores em R$. Não invente números. Se faltar dado, diga o que falta.
@@ -222,42 +180,22 @@ Data/hora atual: ${new Date().toISOString()}
 === DADOS DA LOJA (últimos 30 dias) ===
 ${ctx}`;
 
-  const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
-    body: JSON.stringify({
-      model: "openai/gpt-5.6-terra",
-      stream: true,
+  try {
+    const text = await generateAiText({
       instructions: systemPrompt,
       input: [
         ...history.slice(-6).map((m) => ({
-          role: m.role,
-          content: [
-            {
-              type: m.role === "user" ? "input_text" : "output_text",
-              text: m.content,
-            },
-          ],
+          role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+          content: [{ type: "input_text" as const, text: m.content }],
         })),
-        {
-          role: "user",
-          content: [{ type: "input_text", text: userMessage }],
-        },
+        { role: "user" as const, content: [{ type: "input_text" as const, text: userMessage }] },
       ],
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    if (res.status === 429)
-      return "Muitas solicitações. Tente novamente em instantes.";
-    if (res.status === 402)
-      return "Créditos de IA esgotados. Adicione créditos no Lovable.";
-    return `Erro na IA (${res.status}). Tente novamente.`;
+    });
+    return text || "Não consegui processar agora. Tente novamente.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Erro na IA. Tente novamente.";
+    return message;
   }
-
-  const text = await readStreamingText(res);
-  return text.trim() || "Não consegui processar agora. Tente novamente.";
 }
 
 // ============= Invoice extraction via AI vision =============
@@ -274,8 +212,6 @@ export async function extractInvoiceFromImage(
   storeId: string,
 ): Promise<InvoiceData> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const key = process.env["LOVABLE_API_KEY"];
-  if (!key) throw new Error("IA indisponível");
 
   const { data: catalog } = await supabaseAdmin
     .from("products")
@@ -301,30 +237,18 @@ ${catalogStr}
 Tente corresponder os produtos da nota aos produtos do catálogo pelo nome.
 Responda APENAS com o JSON, sem texto adicional.`;
 
-  const res = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
-    body: JSON.stringify({
-      model: "openai/gpt-5.6-terra",
-      stream: true,
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: prompt },
-            { type: "input_image", image_url: dataUrl },
-          ],
-        },
-      ],
-    }),
+  const text = await generateAiText({
+    vision: true,
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          { type: "input_image", image_url: dataUrl },
+        ],
+      },
+    ],
   });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`IA vision falhou (${res.status}): ${body.slice(0, 150)}`);
-  }
-
-  const text = await readStreamingText(res);
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("Não consegui extrair produtos da imagem.");
 
